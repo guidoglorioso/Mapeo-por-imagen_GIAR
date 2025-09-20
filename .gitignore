@@ -1,0 +1,93 @@
+# General
+*.log
+*.tmp
+*.temp
+*.cache
+*.bak
+*.swp
+*.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.env
+*.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# STM32CubeIDE
+# Ignore CubeIDE settings folder
+.cproject
+.project
+.settings/
+Debug/
+Release/
+build/
+
+# Arduino
+*.cpp
+*.h
+*.hex
+*.elf
+*.bin
+*.eep
+*.ino.*
+*.arduino_
+
+# Build directories
+build/
+dist/
+
+# Documentation
+docs/_build/
+
+# MacOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.nfs*
+
+# Logs
+*.log
+*.out
+*.log.*
+
+# Backup files
+*.bak
+*.old
+*.orig
+*.save
+*.swp
+*.swo
+*.swn
+*.tmp
+*.temp
+*.backup
+*.bac
+
+# Temporary files
+*.tmp
+*.temp
+*.TMP
+*.TEMP
+
+# Jupyter Notebook
+.ipynb_checkpoints
