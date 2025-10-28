@@ -8,10 +8,9 @@ import os
 ###     - Estimar la pose relativa cámara–plano de referencia.
 ###     - Rectificar y centrar las imágenes para que todas compartan la misma orientación y escala.
 ### Autor: Martinez Agustin
-### Fecha: 16/10/2025
-### Version: 1.0
+### Fecha: 28/10/2025
+### Version: 2.0
 #######################################
-
 
 class CameraProcessor:
     def __init__(self, outpath = 'images'):
@@ -25,7 +24,7 @@ class CameraProcessor:
 
         # Variables ArUco
         self._center_coord = []
-
+        self._homografy = None
         aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_100)
         parameters = cv2.aruco.DetectorParameters()
         self._aruco_detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
@@ -213,7 +212,6 @@ class CameraProcessor:
        
         gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         corners, ids, _ = self._aruco_detector.detectMarkers(gray_img)
-
         corner_coords = self.get_corners(corner_ids, corners, ids)
         if corner_coords is None or len(corner_coords) != 4:
             print('no hay coordenadas')
@@ -221,6 +219,7 @@ class CameraProcessor:
 
         # Corrección de la imagen: 
         H, _ = cv2.findHomography(corner_coords, real_points)
+        self._homografy = H
         aligned_img = cv2.warpPerspective(img, H, image_size)
 
         return aligned_img
@@ -286,7 +285,9 @@ class CameraProcessor:
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
         # resultado a color
-        masked_img_color = cv2.bitwise_and(img, img, mask=mask)
+        # masked_img_color = cv2.bitwise_and(img, img, mask=mask)
+        white_background = np.full_like(img, 255)  # fondo blanco
+        masked_img_color = np.where(mask[..., None].astype(bool), img, white_background)
 
         return mask, masked_img_color
 
@@ -316,7 +317,7 @@ class CameraProcessor:
         out_path = os.path.join(out_path, file_name)
         cv2.imwrite(out_path, img)
 
-    def processImages(self, img_folder_path, color_filter, corner_ids, plane_size, pixels_per_mm = 2, save = False, out_path='processed'):
+    def processImages(self, img_folder_path, color_filter, corner_ids, plane_size, pixels_per_mm = 2, center_id = 50, save = False, out_path='processed'):
         '''
         Realiza el proceso completo de una imagen. Requiere que la clase ya esté calibrada.
         Parameters:
@@ -340,15 +341,24 @@ class CameraProcessor:
             self.checkPath(out)
         
         for fname in images:
+            print(f'Procesando: {fname}\n')
             img = self.loadImage(fname)
             img, _, _ = self.undistort(img)
+            
+            self._center_coord = None
+            self.getOrigin(img, center_id)
+
             img = self.warp(img, corner_ids, plane_size, pixels_per_mm)
+            if self._center_coord is not None:
+                self._center_coord = self.transformPoint(self._center_coord)
 
             # falta detectar centro!!
             if color_filter:
                 img, img_color = self.colorFilter(img, color_filter)
             else:
                 img_color = img
+
+            img_color = self.drawOrigin(img_color)
 
             # Guardado
             if not self.checkImage(img):
@@ -366,6 +376,42 @@ class CameraProcessor:
         
         return img_res, img_color_res
 
+    def transformPoint(self, points, inverse=False):
+        '''
+        Transforma uno o varios puntos utilizando la homografía almacenada en la clase.
+        Parameters:
+            points (tuple | list | np.ndarray): Punto o lista de puntos en formato (x, y).
+            inverse (bool): Si True, aplica la homografía inversa (de plano a imagen original).
+        Returns:
+            np.ndarray: Puntos transformados en formato (N, 2).
+        '''
+        if self._homografy is None:
+            print("No hay homografía almacenada. Ejecute warp primero.")
+            return None
+
+        pts = np.array(points, dtype=np.float32)
+
+        # Forzar a formato (N, 1, 2)
+        if pts.ndim == 1:  
+            if pts.shape[0] != 2:
+                raise ValueError("Un punto debe tener formato (x, y)")
+            pts = pts.reshape((1, 1, 2))
+        elif pts.ndim == 2:
+            if pts.shape[1] != 2:
+                raise ValueError("Cada punto debe tener formato (x, y)")
+            pts = pts.reshape((-1, 1, 2))
+        else:
+            raise ValueError("Formato de puntos inválido. Esperado (N,2) o (2,)")
+
+        # Seleccionar homografía directa o inversa
+        H = np.linalg.inv(self._homografy) if inverse else self._homografy
+
+        # Aplicar la transformación
+        transformed = cv2.perspectiveTransform(pts, H)
+
+        # Salida (N, 2)
+        return transformed[:, 0, :]
+
     def getOrigin(self, img, origin_Id):
         '''
         Define al centro de coordenadas en el centro del ArUco con la ID correspondiente.
@@ -373,6 +419,9 @@ class CameraProcessor:
             img: Imagen a analizar.
         origin_Id: Id del ArUco origen de coordenadas.
         '''
+        if not self.checkImage(img):
+            print("Imagen inválida para buscar origen.")
+            return []
         corners, ids, _ = self._aruco_detector.detectMarkers(img)
         if ids is not None:
             for i, corner in enumerate(corners):
@@ -383,6 +432,29 @@ class CameraProcessor:
         
         return self._center_coord
     
+    def drawOrigin(self, img, radius=10, color=(0, 0, 255), thickness=-1):
+        '''
+        Dibuja un punto en la imagen en la posición del origen detectado.
+        Parameters:
+            img: Imagen donde se va a dibujar.
+            radius (int): Radio del círculo.
+            color (tuple): Color BGR (por defecto rojo).
+            thickness (int): Grosor del círculo (-1 para relleno).
+        '''
+        if not self.checkImage(img):
+            print("Imagen inválida para dibujar origen.")
+            return img
+
+        if self._center_coord is None or len(self._center_coord) == 0:
+            print("No se detectó origen. Ejecute getOrigin primero.")
+            return img
+        
+        coord = np.array(self._center_coord, dtype=np.float32).reshape(-1)
+        x, y = int(coord[0]), int(coord[1])
+
+        cv2.circle(img, (x, y), radius, color, thickness)
+        return img
+
     def checkPath(self, path, create = True):
         '''
         Verifica que el Path exista. Lo crea sino.
@@ -416,3 +488,4 @@ class CameraProcessor:
             return False
 
         return True
+    
