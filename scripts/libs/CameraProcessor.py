@@ -8,19 +8,17 @@ import os
 ###     - Estimar la pose relativa cámara–plano de referencia.
 ###     - Rectificar y centrar las imágenes para que todas compartan la misma orientación y escala.
 ### Autor: Martinez Agustin
-### Fecha: 28/10/2025
-### Version: 2.0
+### Fecha: 07/12/2025
+### Version: 3.0
 #######################################
 
+
 class CameraProcessor:
-    def __init__(self, outpath = 'images'):
+    def __init__(self):
         # Variables Calibracion
         self._mtx = []
         self._dist = []
         self._image_res = []
-
-        # Path de saldia de imágenes
-        self._outpath = outpath
 
         # Variables ArUco
         self._center_coord = []
@@ -112,42 +110,45 @@ class CameraProcessor:
         
         return self._mtx, self._dist, rvecs, tvecs, self._image_res
     
-    def saveCalibMatrix(self, file_name='calib_matrix'):
+    def saveCalibMatrix(self, file_name='calib_matrix.npz'):
         '''
         Guarda los valores de calibración en un archivo .npz
         Parameters:
             file_name (str): Nombre del archivo a guardar.
         '''
-        out_path = os.path.join(self._outpath, file_name)
-        self.checkPath(self._outpath)
+        folder = os.path.dirname(file_name)
+        if folder:
+            self.checkPath(folder)
 
         try:
-            np.savez(out_path, mtx=self._mtx, dist=self._dist, _image_res=self._image_res )
-            print(f"Matrices guardadas en {file_name}.npz")
+            np.savez(file_name, mtx=self._mtx, dist=self._dist, _image_res=self._image_res )
+            print(f"Matrices guardadas en {file_name}")
         except Exception as e:
             print(f"Error al guardar: {e}")
 
-    def loadCalibMatrix(self, file_name='calib_matrix'):
-        '''
-        Lee los valores de calibración de un archivo .npz
+    def loadCalibMatrix(self, file_name='calib_matrix.npz'):
+        """
+        Lee los valores de calibración de un archivo .npz.
         Parameters:
-            file_name (str): Nombre del archivo a leer
+            file_name (str): Path completo o nombre del archivo a leer.
         Returns:
             Matlike: Matriz de la cámara.
             Matlike: Coeficientes de distorsión de la cámara.
-            list: Resolución de imágenes de calibración.
-        '''
-        out_path = os.path.join(self._outpath, file_name)
-        if self.checkPath(self._outpath, create=False):
-            try:
-                calib = np.load(f"{out_path}.npz")
-                self._mtx, self._dist, self._image_res = calib["mtx"], calib["dist"], calib['_image_res']
-                self._image_res = tuple(self._image_res)
-            except Exception as e:
-                print('Error al cargar el archivo')
-                return None, None, None
+            tuple: Resolución de imágenes de calibración.
+        """
+        if not os.path.exists(file_name):
+            print(f"Archivo no encontrado: {file_name}")
+            return None, None, None
 
-        return self._mtx, self._dist, self._image_res
+        try:
+            calib = np.load(file_name)
+            self._mtx = calib["mtx"]
+            self._dist = calib["dist"]
+            self._image_res = tuple(calib["_image_res"])
+            return self._mtx, self._dist, self._image_res
+        except Exception as e:
+            print(f"Error al cargar el archivo: {e}")
+            return None, None, None
 
     def undistort(self, img):
         '''
@@ -311,10 +312,7 @@ class CameraProcessor:
             file_name: Nombre del archivo imagen a guardar.
             img_rel_path: Path relativo a donde se va a guardar.
         '''
-        out_path = os.path.join(self._outpath, img_rel_path)
-        self.checkPath(out_path)
-
-        out_path = os.path.join(out_path, file_name)
+        out_path = os.path.join(img_rel_path, file_name)
         cv2.imwrite(out_path, img)
 
     def processImages(self, img_folder_path, color_filter, corner_ids, plane_size, pixels_per_mm = 2, center_id = 50, save = False, out_path='processed'):
@@ -336,9 +334,8 @@ class CameraProcessor:
         img_res = []
         img_color_res = []
 
-        out = os.path.join(self._outpath, out_path)
         if save:
-            self.checkPath(out)
+            self.checkPath(out_path)
         
         for fname in images:
             print(f'Procesando: {fname}\n')
@@ -369,8 +366,8 @@ class CameraProcessor:
             if save:
                 name, ext = os.path.splitext(os.path.basename(fname))
 
-                out_bw = os.path.join(out, f"{name}{ext}")
-                out_color = os.path.join(out, f"{name}_color{ext}")
+                out_bw = os.path.join(out_path, f"{name}{ext}")
+                out_color = os.path.join(out_path, f"{name}_color{ext}")
                 cv2.imwrite(out_bw, img)
                 cv2.imwrite(out_color, img_color)
         
@@ -489,3 +486,78 @@ class CameraProcessor:
 
         return True
     
+    def processDistances(self, img_folder_path, corner_ids, color_filter, plane_size, 
+                        pixels_per_mm=1, center_id=50, angle_step=3):
+
+        images = self.ImageFileName(img_folder_path)
+        distances_out = []
+        angles_out = []
+        img_name = []
+
+        for fname in images:
+            print(f'Procesando (distancias): {fname}')
+            img = self.loadImage(fname)
+            img, _, _ = self.undistort(img)
+
+            # Detectar origen
+            self._center_coord = None
+            self.getOrigin(img, center_id)
+            if self._center_coord is None:
+                print(f"[WARN] No se detectó centro en {fname}. Se omite.")
+                continue
+
+            # Warp (homografía)
+            warped = self.warp(img, corner_ids, plane_size, pixels_per_mm)
+            if warped is None:
+                print(f"[WARN] Homografía falló en {fname}. Se omite.")
+                continue
+
+            # Convertir centro al plano rectificado
+            center_t = self.transformPoint(self._center_coord)
+            if center_t is None:
+                print(f"[WARN] No se pudo transformar el centro. Se omite.")
+                continue
+            cx, cy = center_t[0]
+
+            # Aplicar filtro de color
+            mask, masked_img = self.colorFilter(warped, color_filter)
+            # mask = 255 donde hay pared azul, 0 donde no
+
+            if mask is None:
+                print(f"[WARN] Filtro de color falló. Se omite.")
+                continue
+            h, w = mask.shape
+
+            # Barrido
+            angles = list(range(0, 180 + angle_step, angle_step))
+            distances = []
+
+            for angle_deg in angles:
+                theta = np.deg2rad(angle_deg)
+                dx = np.cos(theta)
+                dy = np.sin(theta)
+
+                dist = 0.0
+                step = 1.0
+
+                while True:
+                    x = int(cx + dx * dist)
+                    y = int(cy - dy * dist)
+
+                    # salir de imagen
+                    if x < 0 or x >= w or y < 0 or y >= h:
+                        distances.append(dist/pixels_per_mm)
+                        break
+
+                    # detección de pared azul
+                    if mask[y, x] > 0:
+                        distances.append(dist/pixels_per_mm)
+                        break
+
+                    dist += step
+
+            distances_out.append(distances)
+            angles_out.append(angles)
+            img_name.append(os.path.basename(fname))
+
+        return distances_out, angles_out, img_name
